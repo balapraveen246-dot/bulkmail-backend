@@ -3,66 +3,86 @@ require("dotenv").config();
 
 const express = require("express");
 const cors = require("cors");
-const nodemailer = require("nodemailer");
+const { google } = require("googleapis");
 
 const app = express();
 
-// Allow local development and deployed Vercel frontend
 const allowedOrigins = [
   "http://localhost:3000",
+  "http://localhost:5173",
   "https://bulkmail-frontend-silk.vercel.app"
 ];
 
-const corsOptions = {
-  origin: function (origin, callback) {
-    // Allow requests without an Origin header and approved frontend URLs
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error("Not allowed by CORS"));
-    }
-  },
-  methods: ["GET", "POST", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"]
-};
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      return callback(new Error("Not allowed by CORS"));
+    },
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"]
+  })
+);
 
-app.use(cors(corsOptions));
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
 
-// Gmail transporter
-const transporter = nodemailer.createTransport({
-  service: "gmail",
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS
-  }
+// OAuth 2.0 client
+const oauth2Client = new google.auth.OAuth2(
+  process.env.GOOGLE_CLIENT_ID,
+  process.env.GOOGLE_CLIENT_SECRET
+);
+
+oauth2Client.setCredentials({
+  refresh_token: process.env.GOOGLE_REFRESH_TOKEN
 });
 
-// Email template
-const emailTemplate = (message, recipient) => ({
-  from: process.env.EMAIL_USER,
-  to: recipient,
-  subject: "You get a Text Message from Your App!",
-  text: message
+// Gmail API client
+const gmail = google.gmail({
+  version: "v1",
+  auth: oauth2Client
 });
 
-// Send emails one by one
-async function sendMails({ message, emailList }) {
-  for (const recipient of emailList) {
-    await transporter.sendMail(
-      emailTemplate(message, recipient)
-    );
-
-    console.log(`Email sent to ${recipient}`);
-  }
-}
-
-// Health-check route
 app.get("/", (req, res) => {
   res.status(200).send("BulkMail Backend is running!");
 });
 
-// Send email route
+// Encode an email message in Base64URL format
+function createRawEmail(message, recipient) {
+  const from = process.env.EMAIL_USER;
+
+  const mimeMessage = [
+    `From: ${from}`,
+    `To: ${recipient}`,
+    "Subject: You get a Text Message from Your App!",
+    "MIME-Version: 1.0",
+    'Content-Type: text/plain; charset="UTF-8"',
+    "Content-Transfer-Encoding: base64",
+    "",
+    Buffer.from(message, "utf8").toString("base64")
+  ].join("\r\n");
+
+  return Buffer.from(mimeMessage, "utf8")
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+async function sendMails({ message, emailList }) {
+  for (const recipient of emailList) {
+    const raw = createRawEmail(message, recipient);
+
+    await gmail.users.messages.send({
+      userId: "me",
+      requestBody: { raw }
+    });
+
+    console.log("Email sent successfully.");
+  }
+}
+
 app.post("/sendemail", async (req, res) => {
   try {
     const { message, emailList } = req.body;
@@ -74,11 +94,11 @@ app.post("/sendemail", async (req, res) => {
       emailList.length === 0
     ) {
       return res.status(400).json({
+        success: false,
         error: "Message and email list are required"
       });
     }
 
-    // Validate recipient email addresses
     const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
     const invalidEmails = emailList.filter(
@@ -89,7 +109,22 @@ app.post("/sendemail", async (req, res) => {
 
     if (invalidEmails.length > 0) {
       return res.status(400).json({
+        success: false,
         error: "Invalid email addresses found"
+      });
+    }
+
+    if (
+      !process.env.EMAIL_USER ||
+      !process.env.GOOGLE_CLIENT_ID ||
+      !process.env.GOOGLE_CLIENT_SECRET ||
+      !process.env.GOOGLE_REFRESH_TOKEN
+    ) {
+      console.error("Required Gmail API environment variables are missing.");
+
+      return res.status(500).json({
+        success: false,
+        error: "Gmail API configuration is incomplete."
       });
     }
 
@@ -103,7 +138,13 @@ app.post("/sendemail", async (req, res) => {
       message: "All emails sent successfully"
     });
   } catch (error) {
-    console.error("Email sending error:", error.message);
+    // Log diagnostic information, never credentials or tokens.
+    console.error(
+      "Gmail API error:",
+      error.response?.data?.error?.message ||
+      error.message ||
+      "Unknown error"
+    );
 
     return res.status(500).json({
       success: false,
@@ -112,11 +153,17 @@ app.post("/sendemail", async (req, res) => {
   }
 });
 
-// Start server using Render's assigned port
 const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Server Started on port ${PORT}`);
-  console.log("EMAIL_USER loaded:", Boolean(process.env.EMAIL_USER));
-  console.log("EMAIL_PASS loaded:", Boolean(process.env.EMAIL_PASS));
+  console.log(
+    "Gmail API configuration present:",
+    Boolean(
+      process.env.GOOGLE_CLIENT_ID &&
+      process.env.GOOGLE_CLIENT_SECRET &&
+      process.env.GOOGLE_REFRESH_TOKEN &&
+      process.env.EMAIL_USER
+    )
+  );
 });
