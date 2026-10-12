@@ -1,77 +1,73 @@
-const express = require("express")
-const cors = require("cors")
-const app = express()
+require("dotenv").config();
 
-app.use(cors(corsOptions))
-
-app.use((req, res, next) => {
-    res.header("Access-Control-Allow-Origin", "https://depfront.vercel.app"); // update to match the domain you will make the request from
-    res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
-    next();
-  });
-  
-  app.options('*', (req, res) => { 
-    // Pre-flight request. Reply successfully:
-    res.header('Access-Control-Allow-Origin', 'https://depfront.vercel.app');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, PATCH, DELETE');
-    res.header('Access-Control-Allow-Headers', 'Content-Type');
-    res.send();
-  });
-  
-var corsOptions = {
-    origin: ["https://depfront.vercel.app/"]
-  };
-
-app.use(express.json())
-
-//Install NODEMAILER
+const express = require("express");
+const cors = require("cors");
 const nodemailer = require("nodemailer");
 
+const app = express();
+
+const corsOptions = {
+  origin: "http://localhost:3000"
+};
+
+app.use(cors(corsOptions));
+app.use(express.json());
+
 const transporter = nodemailer.createTransport({
-  service:"gmail",
+  service: "gmail",
   auth: {
-    // TODO: replace `user` and `pass` values from <https://forwardemail.net>
-    user: "errormakesclever@gmail.com",
-    pass: "hmkp btmz dabc tqgq",
-  },
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS
+  }
 });
 
 const emailTemplate = (message, recipient) => ({
-    from: "errormakesclever@gmail.com",
-    to: recipient,
-    subject: 'You get Text Message from Your App!',
-    text: message
-  });
+  from: process.env.EMAIL_USER,
+  to: recipient,
+  subject: "You get Text Message from Your App!",
+  text: message
+});
 
-const sendMails = ({message, emailList}) => {
-    return new Promise(async (resolve, reject) => {
-        try {
-            for (const recipient of emailList) {
-                const mailOptions = emailTemplate(message, recipient);
-        
-                await transporter.sendMail(mailOptions);
-                console.log(`Email sent to ${recipient}`);
-            }
-            resolve("Success")
-        } catch (error) {
-            console.error('Error sending emails:', error.message);
-            reject(error.message)
-        }
-    })
-};
+async function sendMails({ message, emailList }) {
+  for (const recipient of emailList) {
+    await transporter.sendMail(
+      emailTemplate(message, recipient)
+    );
 
-app.post("/sendemail",function(req,res){
+    console.log(`Email sent to ${recipient}`);
+  }
+}
 
-    sendMails(req.body).then((response) => {
-        console.log(response)
-        res.send(true);
-    })
-    .catch((error) => {
-        res.send(false);
-    })
+app.post("/sendemail", async (req, res) => {
+  try {
+    const { message, emailList } = req.body;
 
-})
+    if (
+      typeof message !== "string" ||
+      !message.trim() ||
+      !Array.isArray(emailList) ||
+      emailList.length === 0
+    ) {
+      return res.status(400).json({
+        error: "Message and email list are required"
+      });
+    }
 
-app.listen(5000,function(){
-    console.log("Server Started.....")
-})
+    await sendMails({ message, emailList });
+
+    return res.json(true);
+  } catch (error) {
+    console.error("Email sending error:", error.message);
+
+    return res.status(500).json({
+      error: "Failed to send emails. Check backend logs."
+    });
+  }
+});
+
+app.listen(5000, () => {
+  console.log("Server Started on port 5000");
+});
+
+console.log("EMAIL_USER loaded:", Boolean(process.env.EMAIL_USER));
+console.log("EMAIL_PASS loaded:", Boolean(process.env.EMAIL_PASS));
